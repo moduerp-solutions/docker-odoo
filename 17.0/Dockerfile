@@ -1,19 +1,21 @@
 FROM ubuntu:jammy
-MAINTAINER Odoo S.A. <info@odoo.com>
+LABEL org.opencontainers.image.authors="ModuERP Solutions <moduerp.solutions@gmail.com>"
 
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
 # Generate locale C.UTF-8 for postgres and general locale data
-ENV LANG en_US.UTF-8
+ENV LANG=en_US.UTF-8 \
+    LANGUAGE=en_US:en \
+    LC_ALL=en_US.UTF-8 \
+    TZ=Etc/UTC
 
-# Retrieve the target architecture to install the correct wkhtmltopdf package
-ARG TARGETARCH
-
-# Install some deps, lessc and less-plugin-clean-css, and wkhtmltopdf
-
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive \
-    apt-get install -y --no-install-recommends \
+# Install some deps, lessc and less-plugin-clean-css
+RUN --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get update \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y > /dev/null \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         dirmngr \
@@ -22,23 +24,42 @@ RUN apt-get update && \
         libssl-dev \
         node-less \
         npm \
-        python3-magic \
-        python3-num2words \
-        python3-odf \
-        python3-pdfminer \
-        python3-pip \
-        python3-phonenumbers \
-        python3-pyldap \
-        python3-qrcode \
-        python3-renderpm \
-        python3-setuptools \
-        python3-slugify \
-        python3-vobject \
-        python3-watchdog \
-        python3-xlrd \
-        python3-xlwt \
-        xz-utils && \
-    if [ -z "${TARGETARCH}" ]; then \
+        xz-utils \
+        build-essential \
+        geoip-database \
+        git \
+        libcairo2-dev \
+        locales \
+        patch \
+        pkg-config \
+        sudo \
+        vim \
+        less \
+        zip \
+        unzip \
+        wget \
+        fontconfig \
+        xfonts-75dpi \
+        xfonts-base \
+        libjpeg-turbo8 \
+        libxml2-dev \
+        libxslt1-dev \
+        libffi-dev \
+        libsasl2-dev \
+        libldap2-dev \
+        libjpeg-dev \
+        zlib1g-dev \
+        libpq-dev \
+
+        software-properties-common > /dev/null
+
+# Setting locale
+RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen
+
+# Install wkhtmltopdf
+ARG TARGETARCH
+RUN if [ -z "${TARGETARCH}" ]; then \
         TARGETARCH="$(dpkg --print-architecture)"; \
     fi; \
     WKHTMLTOPDF_ARCH=${TARGETARCH} && \
@@ -52,7 +73,7 @@ RUN apt-get update && \
     && apt-get install -y --no-install-recommends ./wkhtmltox.deb \
     && rm -rf /var/lib/apt/lists/* wkhtmltox.deb
 
-# install latest postgresql-client
+# Install latest postgresql-client
 RUN echo 'deb http://apt.postgresql.org/pub/repos/apt/ jammy-pgdg main' > /etc/apt/sources.list.d/pgdg.list \
     && GNUPGHOME="$(mktemp -d)" \
     && export GNUPGHOME \
@@ -67,38 +88,66 @@ RUN echo 'deb http://apt.postgresql.org/pub/repos/apt/ jammy-pgdg main' > /etc/a
     && rm -rf /var/lib/apt/lists/*
 
 # Install rtlcss (on Debian buster)
-RUN npm install -g rtlcss
+RUN npm install -g rtlcss \
+    && npm cache clean --force
 
-# Install Odoo
-ENV ODOO_VERSION 17.0
-ARG ODOO_RELEASE=20251222
-ARG ODOO_SHA=89bedfe72d8d35aac19b03135ba8e7064e6862ab
-RUN curl -o odoo.deb -sSL http://nightly.odoo.com/${ODOO_VERSION}/nightly/deb/odoo_${ODOO_VERSION}.${ODOO_RELEASE}_all.deb \
-    && echo "${ODOO_SHA} odoo.deb" | sha1sum -c - \
-    && apt-get update \
-    && apt-get -y install --no-install-recommends ./odoo.deb \
-    && rm -rf /var/lib/apt/lists/* odoo.deb
+# Config git
+RUN git config --system advice.detachedHead false \
+    && git config --system --add safe.directory /opt/odoo/customizations
+
+# Create directory for Odoo
+# /var/lib/odoo : filestore, sessions, etc.
+# /opt/odoo : odoo code, custom modules, etc.
+RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
+    && mkdir -p /var/lib/odoo /opt/odoo \
+    && useradd -MUu 1000 -s /bin/bash -d /opt/odoo odoo \
+    && chown -R odoo:odoo /var/lib/odoo /opt/odoo
+VOLUME ["/var/lib/odoo", "/opt/odoo"]
 
 # Copy entrypoint script and Odoo configuration file
 COPY ./entrypoint.sh /
-COPY ./odoo.conf /etc/odoo/
+COPY ./odoo.conf /opt/odoo/
 
-# Set permissions and Mount /var/lib/odoo to allow restoring filestore and /mnt/extra-addons for users addons
-RUN chown odoo /etc/odoo/odoo.conf \
-    && mkdir -p /mnt/extra-addons \
-    && chown -R odoo /mnt/extra-addons
-VOLUME ["/var/lib/odoo", "/mnt/extra-addons"]
+# Link odoo-bin to /usr/local/bin
+RUN ln -s /opt/odoo/odoo-requirements/odoo/odoo-bin /usr/local/bin/
 
-# Expose Odoo services
-EXPOSE 8069 8071 8072
+# Install Python3.13
+RUN add-apt-repository ppa:deadsnakes/ppa
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    python3.13 \
+    python3.13-venv \
+    python3.13-dev \
+    python3-pip \
+ && rm -rf /var/lib/apt/lists/*
+
+# Make python3.13 the default python
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.13 1 \
+ && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 1
+
+# Upgrade pip tooling
+RUN python3.13 -m ensurepip --upgrade \
+ && python3.13 -m pip install --upgrade setuptools wheel pip
+
+# Install Odoo python dependencies
+ENV ODOO_VERSION=17.0
+RUN git clone --depth=1 --branch ${ODOO_VERSION} https://github.com/odoo/odoo.git /tmp/odoo \
+    && pip3 install --no-cache-dir -r /tmp/odoo/requirements.txt
+RUN --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && /tmp/odoo/setup/debinstall.sh
+RUN rm -rf /tmp/odoo
+
+# Remove requirements file to avoid false positives in vulnerability scans
+RUN find /opt/odoo -name requirements.txt -delete
 
 # Set the default config file
-ENV ODOO_RC /etc/odoo/odoo.conf
+ENV ODOO_RC=/opt/odoo/odoo.conf
 
+# Copy wait-for-psql script
 COPY wait-for-psql.py /usr/local/bin/wait-for-psql.py
 
-# Set default user when running the container
-USER odoo
-
+USER odoo 
+EXPOSE 8069 8071 8072
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["odoo"]
