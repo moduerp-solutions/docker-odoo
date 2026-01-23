@@ -50,7 +50,6 @@ RUN --mount=type=cache,target=/var/lib/apt,sharing=locked \
         libjpeg-dev \
         zlib1g-dev \
         libpq-dev \
-
         software-properties-common > /dev/null
 
 # Setting locale
@@ -102,7 +101,6 @@ RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
     && mkdir -p /var/lib/odoo /opt/odoo \
     && useradd -MUu 1000 -s /bin/bash -d /opt/odoo odoo \
     && chown -R odoo:odoo /var/lib/odoo /opt/odoo
-VOLUME ["/var/lib/odoo", "/opt/odoo"]
 
 # Copy entrypoint script and Odoo configuration file
 COPY ./entrypoint.sh /
@@ -133,9 +131,6 @@ RUN python3.13 -m ensurepip --upgrade \
 ENV ODOO_VERSION=17.0
 RUN git clone --depth=1 --branch ${ODOO_VERSION} https://github.com/odoo/odoo.git /tmp/odoo \
     && pip3 install --no-cache-dir -r /tmp/odoo/requirements.txt
-RUN --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
-    && /tmp/odoo/setup/debinstall.sh
 RUN rm -rf /tmp/odoo
 
 # Remove requirements file to avoid false positives in vulnerability scans
@@ -147,7 +142,9 @@ ENV ODOO_RC=/opt/odoo/odoo.conf
 # Copy wait-for-psql script
 COPY wait-for-psql.py /usr/local/bin/wait-for-psql.py
 
+RUN apt-get update \
+    && git config --system core.checkStat minimal \
+    && echo "odoo ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/odoo
+
 USER odoo 
 EXPOSE 8069 8071 8072
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["odoo"]
